@@ -1,5 +1,10 @@
 # AI Caddie Starter
 
+GitHub update guide:
+git add .
+git commit -m "Beskriv vad du ändrade"
+git push
+
 This is a simple Expo / React Native starter for a golf AI caddie.
 
 It already includes:

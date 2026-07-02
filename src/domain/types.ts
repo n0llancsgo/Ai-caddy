@@ -34,12 +34,19 @@ export type GeoPoint = {
   longitude: number;
 };
 
+export type HazardType = "bunker" | "water" | "trees" | "out" | "rough" | "other";
+export type HazardSeverity = "low" | "medium" | "high";
+
 export type Hazard = {
   id: string;
-  type: "bunker" | "water" | "trees" | "out" | "other";
+  type: HazardType;
   label: string;
   distanceFromTeeMeters?: number;
+  startDistanceMeters?: number;
+  endDistanceMeters?: number;
   side?: "left" | "right" | "center";
+  severity?: HazardSeverity;
+  notes?: string;
 };
 
 export type Hole = {
@@ -49,7 +56,12 @@ export type Hole = {
   handicap?: number;
   tee?: GeoPoint;
   greenCenter?: GeoPoint;
+  greenFrontMetersFromTee?: number;
+  greenBackMetersFromTee?: number;
   preferredMiss?: "left" | "right" | "short" | "long" | "center";
+  greenSize?: "small" | "medium" | "large";
+  doglegDirection?: "left" | "right" | "none";
+  doglegCornerDistanceMeters?: number;
   hazards?: Hazard[];
   notes?: string;
 };
@@ -70,15 +82,27 @@ export type WeatherSnapshot = {
   fetchedAtIso?: string;
 };
 
+export type ShotIntent =
+  | "tee"
+  | "attack_green"
+  | "layup"
+  | "safe_advance"
+  | "recovery"
+  | "chip"
+  | "putt";
+
 export type RoundShot = {
   id: string;
   holeNumber: number;
   shotNumber: number;
   clubName: string;
   lie: Lie;
+  intent: ShotIntent;
   outcome: ShotOutcome;
   plannedDistanceMeters?: number;
   measuredDistanceMeters?: number;
+  startPosition?: GeoPoint;
+  endPosition?: GeoPoint;
   position?: GeoPoint;
   createdAtIso: string;
   note?: string;
@@ -101,4 +125,30 @@ export type Recommendation = {
   shotShape: ShotShape;
   message: string;
   factors: string[];
+};
+
+export type ShotPlanKind = "go_for_green" | "layup" | "safe_advance";
+
+export type ShotPlanOption = {
+  kind: ShotPlanKind;
+  label: string;
+  club?: Club;
+  clubName: string;
+  intent: ShotIntent;
+  targetDistanceMeters: number;
+  effectiveDistanceMeters: number;
+  expectedRemainingMeters: number;
+  requiredCarryMeters?: number;
+  riskScore: number;
+  rewardScore: number;
+  recommended: boolean;
+  explanation: string[];
+  message: string;
+};
+
+export type ShotPlanResult = {
+  headline: string;
+  summary: string;
+  recommendedOption: ShotPlanOption;
+  options: ShotPlanOption[];
 };

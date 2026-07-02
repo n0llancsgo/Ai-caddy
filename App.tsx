@@ -12,12 +12,14 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { distanceMeters } from "./src/domain/distance";
 import { defaultProfile } from "./src/data/defaultProfile";
 import { sampleCourses } from "./src/data/sampleCourse";
 import { recommendClub } from "./src/domain/clubRecommendation";
 import { teeSummary } from "./src/domain/holeStrategy";
+import { planShot } from "./src/domain/shotPlanner";
 import { analyzeRound } from "./src/domain/roundAnalysis";
-import { Club, Lie, PlayerProfile, RoundShot, ShotOutcome, WeatherSnapshot } from "./src/domain/types";
+import { Club, GeoPoint, Lie, PlayerProfile, RoundShot, ShotOutcome, WeatherSnapshot } from "./src/domain/types";
 import { getCurrentPosition, findNearestCourse } from "./src/services/location";
 import { fetchOpenMeteoWeather } from "./src/services/weatherOpenMeteo";
 import { loadJson, saveJson } from "./src/services/storage";
@@ -83,6 +85,9 @@ export default function App() {
   const [outcome, setOutcome] = useState<ShotOutcome>("fairway");
   const [weather, setWeather] = useState<WeatherSnapshot | undefined>();
   const [shots, setShots] = useState<RoundShot[]>([]);
+  const [currentBallPosition, setCurrentBallPosition] = useState<GeoPoint | undefined>(
+    sampleCourses[0].holes[0].tee,
+  );
   const [status, setStatus] = useState("Demo course loaded. Add your club lengths and start logging shots.");
 
   useEffect(() => {
@@ -100,25 +105,44 @@ export default function App() {
 
   const hole = course.holes.find((h) => h.number === currentHoleNumber) ?? course.holes[0];
 
-  const recommendation = useMemo(() => {
-  if (lie === "tee") {
-    return recommendTeeShot({
-      profile,
-      hole,
-    });
-  }
+  const distanceToGreenMeters = useMemo(() => {
+    const meters = Number(targetDistance);
+    return Number.isFinite(meters) && meters > 0 ? meters : hole.meters;
+  }, [targetDistance, hole.meters]);
 
-  const meters = Number(targetDistance);
-
-  return recommendClub({
+  const teeRecommendation = useMemo(() => {
+  return recommendTeeShot({
     profile,
-    targetDistanceMeters: Number.isFinite(meters) && meters > 0 ? meters : hole.meters,
-    lie,
+    hole,
     weather,
   });
-}, [profile, targetDistance, lie, weather, hole]);
+}, [profile, hole, weather]);
+
+  const approachRecommendation = useMemo(() => {
+    return recommendClub({
+      profile,
+      targetDistanceMeters: distanceToGreenMeters,
+      lie,
+      weather,
+    });
+  }, [profile, distanceToGreenMeters, lie, weather]);
+
+  const shotPlan = useMemo(() => {
+    if (lie === "tee") return undefined;
+
+    return planShot({
+      profile,
+      hole,
+      lie,
+      distanceToGreenMeters,
+      weather,
+    });
+  }, [profile, hole, lie, distanceToGreenMeters, weather]);
+
+  const recommendation = lie === "tee" ? teeRecommendation : approachRecommendation;
   const analysis = useMemo(() => analyzeRound(shots), [shots]);
 
+  
   function updateClub(clubId: string, patch: Partial<Club>) {
     setProfile((current) => ({
       ...current,
@@ -149,24 +173,47 @@ export default function App() {
 
   function addShot() {
     const shotNumber = shots.filter((shot) => shot.holeNumber === currentHoleNumber).length + 1;
+    const selectedOption = lie === "tee" ? undefined : shotPlan?.recommendedOption;
+
     const shot: RoundShot = {
       id: generateId("shot"),
       holeNumber: currentHoleNumber,
       shotNumber,
-      clubName: recommendation.club?.name ?? "Manual",
+      clubName:
+        lie === "tee"
+          ? teeRecommendation.club?.name ?? "Manual"
+          : selectedOption?.clubName ?? recommendation.club?.name ?? "Manual",
       lie,
+      intent:
+        lie === "tee"
+          ? "tee"
+          : selectedOption?.intent ?? (lie === "green" ? "putt" : "attack_green"),
       outcome,
-      plannedDistanceMeters: recommendation.targetDistanceMeters,
+      plannedDistanceMeters:
+        lie === "tee"
+          ? teeRecommendation.targetDistanceMeters
+          : selectedOption?.targetDistanceMeters ?? recommendation.targetDistanceMeters,
       createdAtIso: new Date().toISOString(),
-      note: recommendation.message,
+      note: lie === "tee" ? teeRecommendation.message : selectedOption?.message ?? recommendation.message,
     };
+
     setShots((current) => [...current, shot]);
     setStatus(`Logged shot ${shotNumber} on hole ${currentHoleNumber}: ${shot.clubName}, ${outcome}.`);
   }
 
-  function speakTeePlan() {
-    const summary = teeSummary(hole, profile);
-    speak(`${summary} ${recommendation.message}`);
+  function speakCurrentPlan() {
+    if (lie === "tee") {
+      const summary = teeSummary(hole, profile);
+      speak(`${summary} ${teeRecommendation.message}`);
+      return;
+    }
+
+    if (shotPlan) {
+      speak(`${shotPlan.summary} Rekommendation: ${shotPlan.recommendedOption.message}`);
+      return;
+    }
+
+    speak(recommendation.message);
   }
 
   function nextHole(delta: number) {
@@ -269,14 +316,66 @@ export default function App() {
                 onChange={setLie}
               />
 
-              <Text style={styles.recommendation}>{recommendation.message}</Text>
-              {recommendation.factors.map((factor: string) => (
-                <Text key={factor} style={styles.factor}>- {factor}</Text>
-              ))}
+              {lie === "tee" ? (
+                <>
+                  <Text style={styles.recommendation}>{teeRecommendation.message}</Text>
+                  {teeRecommendation.factors.map((factor) => (
+                    <Text key={factor} style={styles.factor}>
+                      - {factor}
+                    </Text>
+                  ))}
+                </>
+              ) : shotPlan ? (
+                <>
+                  <Text style={styles.recommendation}>{shotPlan.headline}</Text>
+                  <Text style={styles.muted}>{shotPlan.summary}</Text>
+
+                  {shotPlan.options.map((option) => (
+                    <View
+                      key={`${option.kind}-${option.label}`}
+                      style={[styles.planCard, option.recommended && styles.planCardRecommended]}
+                    >
+                      <Text style={styles.planTitle}>
+                        {option.recommended ? "Recommended: " : "Alternative: "}
+                        {option.label}
+                      </Text>
+                      <Text style={styles.planClub}>
+                        {option.clubName} • {Math.round(option.targetDistanceMeters)} m
+                      </Text>
+
+                      {typeof option.requiredCarryMeters === "number" && (
+                        <Text style={styles.muted}>
+                          Carry needed: about {Math.round(option.requiredCarryMeters)} m
+                        </Text>
+                      )}
+
+                      <Text style={styles.muted}>{option.message}</Text>
+                      <Text style={styles.muted}>
+                        Risk {option.riskScore}/10 • Reward {option.rewardScore}/10 • Leaves about{" "}
+                        {Math.round(option.expectedRemainingMeters)} m
+                      </Text>
+                      {option.explanation.map((line) => (
+                        <Text key={`${option.kind}-${option.clubName}-${line}`} style={styles.factor}>
+                          - {line}
+                        </Text>
+                      ))}
+                    </View>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <Text style={styles.recommendation}>{recommendation.message}</Text>
+                  {recommendation.factors.map((factor) => (
+                    <Text key={factor} style={styles.factor}>
+                      - {factor}
+                    </Text>
+                  ))}
+                </>
+              )}
 
               <View style={styles.rowGap}>
                 <Button label="GPS + weather" onPress={locateAndFetchWeather} />
-                <Button label="Read aloud" onPress={speakTeePlan} />
+                <Button label="Read aloud" onPress={speakCurrentPlan} />
               </View>
             </View>
 
@@ -494,6 +593,29 @@ optionCheck: {
 },
   recommendation: { fontSize: 18, fontWeight: "800", color: "#15351f", lineHeight: 25, marginVertical: 10 },
   factor: { color: "#385143", marginTop: 4 },
+  planCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "#f3f6f1",
+    borderWidth: 1,
+    borderColor: "#d7dfd6",
+  },
+  planCardRecommended: {
+    backgroundColor: "#e3f0e2",
+    borderColor: "#2f6f3d",
+  },
+  planTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#15351f",
+  },
+  planClub: {
+    marginTop: 6,
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#2f6f3d",
+  },
   rowGap: { flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" },
   button: { backgroundColor: "#2f6f3d", paddingVertical: 12, paddingHorizontal: 14, borderRadius: 13, alignItems: "center", marginTop: 10 },
   dangerButton: { backgroundColor: "#963c3c" },
