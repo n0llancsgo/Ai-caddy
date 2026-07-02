@@ -1,0 +1,504 @@
+import { recommendTeeShot } from "./src/domain/teeRecommendation";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Modal,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { StatusBar } from "expo-status-bar";
+import { defaultProfile } from "./src/data/defaultProfile";
+import { sampleCourses } from "./src/data/sampleCourse";
+import { recommendClub } from "./src/domain/clubRecommendation";
+import { teeSummary } from "./src/domain/holeStrategy";
+import { analyzeRound } from "./src/domain/roundAnalysis";
+import { Club, Lie, PlayerProfile, RoundShot, ShotOutcome, WeatherSnapshot } from "./src/domain/types";
+import { getCurrentPosition, findNearestCourse } from "./src/services/location";
+import { fetchOpenMeteoWeather } from "./src/services/weatherOpenMeteo";
+import { loadJson, saveJson } from "./src/services/storage";
+import { speak } from "./src/services/speech";
+
+const PROFILE_KEY = "ai-caddie.profile.v1";
+const SHOTS_KEY = "ai-caddie.shots.v1";
+const LIES: Lie[] = ["tee", "fairway", "rough", "sand", "green", "recovery"];
+const OUTCOMES: ShotOutcome[] = ["fairway", "green", "right", "left", "short", "long", "bunker", "penalty", "putt", "other"];
+type SelectOption<T extends string> = {
+  label: string;
+  value: T;
+};
+
+const LIE_OPTIONS: SelectOption<Lie>[] = [
+  { label: "Tee", value: "tee" },
+  { label: "Fairway", value: "fairway" },
+  { label: "Rough", value: "rough" },
+  { label: "Sand", value: "sand" },
+  { label: "Green", value: "green" },
+  { label: "Recovery / problem", value: "recovery" },
+];
+
+const OUTCOME_OPTIONS: SelectOption<ShotOutcome>[] = [
+  { label: "Fairway", value: "fairway" },
+  { label: "Green", value: "green" },
+  { label: "Miss höger", value: "right" },
+  { label: "Miss vänster", value: "left" },
+  { label: "Kort", value: "short" },
+  { label: "Lång", value: "long" },
+  { label: "Bunker", value: "bunker" },
+  { label: "Plikt / penalty", value: "penalty" },
+  { label: "Putt", value: "putt" },
+  { label: "Annat", value: "other" },
+];
+
+const DOMINANT_MISS_OPTIONS: SelectOption<PlayerProfile["dominantMiss"]>[] = [
+  { label: "Ofta höger", value: "right" },
+  { label: "Ofta vänster", value: "left" },
+  { label: "Ofta kort", value: "short" },
+  { label: "Ofta lång", value: "long" },
+  { label: "Blandat", value: "mixed" },
+];
+
+type Tab = "setup" | "round" | "analysis";
+
+function nextInList<T>(items: T[], current: T): T {
+  const index = items.indexOf(current);
+  return items[(index + 1) % items.length];
+}
+
+function generateId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+}
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("round");
+  const [profile, setProfile] = useState<PlayerProfile>(defaultProfile);
+  const [course, setCourse] = useState(sampleCourses[0]);
+  const [currentHoleNumber, setCurrentHoleNumber] = useState(1);
+  const [targetDistance, setTargetDistance] = useState(String(sampleCourses[0].holes[0].meters));
+  const [lie, setLie] = useState<Lie>("tee");
+  const [outcome, setOutcome] = useState<ShotOutcome>("fairway");
+  const [weather, setWeather] = useState<WeatherSnapshot | undefined>();
+  const [shots, setShots] = useState<RoundShot[]>([]);
+  const [status, setStatus] = useState("Demo course loaded. Add your club lengths and start logging shots.");
+
+  useEffect(() => {
+    void loadJson<PlayerProfile>(PROFILE_KEY, defaultProfile).then(setProfile);
+    void loadJson<RoundShot[]>(SHOTS_KEY, []).then(setShots);
+  }, []);
+
+  useEffect(() => {
+    void saveJson(PROFILE_KEY, profile);
+  }, [profile]);
+
+  useEffect(() => {
+    void saveJson(SHOTS_KEY, shots);
+  }, [shots]);
+
+  const hole = course.holes.find((h) => h.number === currentHoleNumber) ?? course.holes[0];
+
+  const recommendation = useMemo(() => {
+  if (lie === "tee") {
+    return recommendTeeShot({
+      profile,
+      hole,
+    });
+  }
+
+  const meters = Number(targetDistance);
+
+  return recommendClub({
+    profile,
+    targetDistanceMeters: Number.isFinite(meters) && meters > 0 ? meters : hole.meters,
+    lie,
+    weather,
+  });
+}, [profile, targetDistance, lie, weather, hole]);
+  const analysis = useMemo(() => analyzeRound(shots), [shots]);
+
+  function updateClub(clubId: string, patch: Partial<Club>) {
+    setProfile((current) => ({
+      ...current,
+      clubs: current.clubs.map((club) => (club.id === clubId ? { ...club, ...patch } : club)),
+    }));
+  }
+
+  async function locateAndFetchWeather() {
+    try {
+      setStatus("Checking GPS and weather...");
+      const position = await getCurrentPosition();
+      if (!position) {
+        setStatus("Location permission was not granted. Demo course remains active.");
+        return;
+      }
+
+      const nearest = findNearestCourse(position, sampleCourses, 10000);
+      if (nearest) setCourse(nearest);
+
+      const fetchedWeather = await fetchOpenMeteoWeather(position.latitude, position.longitude);
+      setWeather(fetchedWeather);
+      setStatus(`GPS active. Weather updated${nearest ? ` near ${nearest.name}` : ""}.`);
+    } catch (error) {
+      console.warn(error);
+      setStatus("Could not fetch GPS/weather. The app still works in manual mode.");
+    }
+  }
+
+  function addShot() {
+    const shotNumber = shots.filter((shot) => shot.holeNumber === currentHoleNumber).length + 1;
+    const shot: RoundShot = {
+      id: generateId("shot"),
+      holeNumber: currentHoleNumber,
+      shotNumber,
+      clubName: recommendation.club?.name ?? "Manual",
+      lie,
+      outcome,
+      plannedDistanceMeters: recommendation.targetDistanceMeters,
+      createdAtIso: new Date().toISOString(),
+      note: recommendation.message,
+    };
+    setShots((current) => [...current, shot]);
+    setStatus(`Logged shot ${shotNumber} on hole ${currentHoleNumber}: ${shot.clubName}, ${outcome}.`);
+  }
+
+  function speakTeePlan() {
+    const summary = teeSummary(hole, profile);
+    speak(`${summary} ${recommendation.message}`);
+  }
+
+  function nextHole(delta: number) {
+    const holeNumbers = course.holes.map((h) => h.number);
+    const index = holeNumbers.indexOf(currentHoleNumber);
+    const nextIndex = Math.min(Math.max(index + delta, 0), holeNumbers.length - 1);
+    const nextNumber = holeNumbers[nextIndex];
+    setCurrentHoleNumber(nextNumber);
+    const nextHoleData = course.holes.find((h) => h.number === nextNumber);
+    setTargetDistance(String(nextHoleData?.meters ?? ""));
+    setLie("tee");
+    setOutcome("fairway");
+  }
+
+  function resetRound() {
+    Alert.alert("Reset round", "Clear all logged shots on this phone?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Reset", style: "destructive", onPress: () => setShots([]) },
+    ]);
+  }
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <StatusBar style="auto" />
+      <View style={styles.header}>
+        <Text style={styles.title}>AI Caddie Starter</Text>
+        <Text style={styles.subtitle}>{course.name}</Text>
+      </View>
+
+      <View style={styles.tabs}>
+        <TabButton label="Setup" active={tab === "setup"} onPress={() => setTab("setup")} />
+        <TabButton label="Round" active={tab === "round"} onPress={() => setTab("round")} />
+        <TabButton label="Analysis" active={tab === "analysis"} onPress={() => setTab("analysis")} />
+      </View>
+
+      <ScrollView style={styles.body} contentContainerStyle={styles.content}>
+        <Text style={styles.status}>{status}</Text>
+
+        {tab === "setup" && (
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>1. Player profile</Text>
+            <Text style={styles.label}>Name</Text>
+            <TextInput
+              style={styles.input}
+              value={profile.name}
+              onChangeText={(name) => setProfile((current) => ({ ...current, name }))}
+            />
+            <Text style={styles.label}>Dominant miss</Text>
+            <Dropdown
+              title="Välj vanlig miss"
+              value={profile.dominantMiss}
+              options={DOMINANT_MISS_OPTIONS}
+              onChange={(dominantMiss) => setProfile((current) => ({ ...current, dominantMiss }))}
+            />
+
+            <Text style={styles.sectionTitle}>2. Club lengths</Text>
+            {profile.clubs.map((club) => (
+              <View key={club.id} style={styles.clubRow}>
+                <Text style={styles.clubName}>{club.name}</Text>
+                <TextInput
+                  style={styles.smallInput}
+                  keyboardType="numeric"
+                  value={String(club.carryMeters)}
+                  onChangeText={(value) => updateClub(club.id, { carryMeters: Number(value) || 0 })}
+                />
+                <Text style={styles.muted}>carry m</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {tab === "round" && (
+          <View>
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Hole {hole.number}</Text>
+              <Text style={styles.bigText}>Par {hole.par} - {hole.meters} m</Text>
+              <Text style={styles.muted}>{teeSummary(hole, profile)}</Text>
+
+              <View style={styles.rowGap}>
+                <Button label="Prev hole" onPress={() => nextHole(-1)} />
+                <Button label="Next hole" onPress={() => nextHole(1)} />
+              </View>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Shot recommendation</Text>
+              <Text style={styles.label}>Distance to target / pin / safe landing area</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={targetDistance}
+                onChangeText={setTargetDistance}
+              />
+
+              <Text style={styles.label}>Lie</Text>
+              <Dropdown
+                title="Välj lie"
+                value={lie}
+                options={LIE_OPTIONS}
+                onChange={setLie}
+              />
+
+              <Text style={styles.recommendation}>{recommendation.message}</Text>
+              {recommendation.factors.map((factor: string) => (
+                <Text key={factor} style={styles.factor}>- {factor}</Text>
+              ))}
+
+              <View style={styles.rowGap}>
+                <Button label="GPS + weather" onPress={locateAndFetchWeather} />
+                <Button label="Read aloud" onPress={speakTeePlan} />
+              </View>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Log shot</Text>
+              <Text style={styles.label}>Outcome</Text>
+              <Dropdown
+                title="Välj resultat"
+                value={outcome}
+                options={OUTCOME_OPTIONS}
+                onChange={setOutcome}
+              />
+              <Button label="Save shot" onPress={addShot} />
+              <Text style={styles.muted}>Shots this hole: {shots.filter((shot) => shot.holeNumber === currentHoleNumber).length}</Text>
+            </View>
+          </View>
+        )}
+
+        {tab === "analysis" && (
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Round analysis</Text>
+            <Text style={styles.recommendation}>{analysis.mainFinding}</Text>
+            <Metric label="Total shots" value={analysis.totalShots} />
+            <Metric label="Fairways" value={analysis.fairways} />
+            <Metric label="Greens" value={analysis.greens} />
+            <Metric label="Putts" value={analysis.putts} />
+            <Metric label="Miss right" value={analysis.missesRight} />
+            <Metric label="Miss left" value={analysis.missesLeft} />
+            <Metric label="Short" value={analysis.missesShort} />
+            <Metric label="Long" value={analysis.missesLong} />
+            <Metric label="Penalties" value={analysis.penalties} />
+            <Button label="Reset round" onPress={resetRound} danger />
+          </View>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function TabButton(props: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={[styles.tab, props.active && styles.tabActive]} onPress={props.onPress}>
+      <Text style={[styles.tabText, props.active && styles.tabTextActive]}>{props.label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function Dropdown<T extends string>(props: {
+  title: string;
+  value: T;
+  options: SelectOption<T>[];
+  onChange: (value: T) => void;
+}) {
+  const [visible, setVisible] = useState(false);
+  const selected = props.options.find((option) => option.value === props.value);
+
+  return (
+    <>
+      <TouchableOpacity style={styles.dropdownButton} onPress={() => setVisible(true)}>
+        <Text style={styles.dropdownButtonText}>{selected?.label ?? props.value}</Text>
+        <Text style={styles.dropdownChevron}>▼</Text>
+      </TouchableOpacity>
+
+      <Modal
+        visible={visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setVisible(false)}
+        >
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{props.title}</Text>
+
+            {props.options.map((option) => {
+              const active = option.value === props.value;
+
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[styles.optionRow, active && styles.optionRowActive]}
+                  onPress={() => {
+                    props.onChange(option.value);
+                    setVisible(false);
+                  }}
+                >
+                  <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                    {option.label}
+                  </Text>
+                  {active && <Text style={styles.optionCheck}>✓</Text>}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    </>
+  );
+}
+
+function Button(props: { label: string; onPress: () => void; danger?: boolean }) {
+  return (
+    <TouchableOpacity style={[styles.button, props.danger && styles.dangerButton]} onPress={props.onPress}>
+      <Text style={styles.buttonText}>{props.label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function Metric(props: { label: string; value: number }) {
+  return (
+    <View style={styles.metric}>
+      <Text style={styles.metricLabel}>{props.label}</Text>
+      <Text style={styles.metricValue}>{props.value}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: "#f3f6f1" },
+  header: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 8 },
+  title: { fontSize: 26, fontWeight: "800", color: "#15351f" },
+  subtitle: { color: "#50735b", marginTop: 2 },
+  tabs: { flexDirection: "row", paddingHorizontal: 12, gap: 8, marginBottom: 8 },
+  tab: { flex: 1, paddingVertical: 10, borderRadius: 14, backgroundColor: "#e1eadf", alignItems: "center" },
+  tabActive: { backgroundColor: "#15351f" },
+  tabText: { fontWeight: "700", color: "#15351f" },
+  tabTextActive: { color: "white" },
+  body: { flex: 1 },
+  content: { padding: 14, paddingBottom: 32 },
+  status: { color: "#385143", marginBottom: 12, lineHeight: 20 },
+  card: { backgroundColor: "white", borderRadius: 18, padding: 16, marginBottom: 14, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
+  sectionTitle: { fontSize: 18, fontWeight: "800", marginBottom: 10, color: "#15351f" },
+  label: { fontSize: 13, fontWeight: "700", color: "#385143", marginTop: 10, marginBottom: 6 },
+  input: { backgroundColor: "#f3f6f1", borderRadius: 12, padding: 12, fontSize: 16 },
+  smallInput: { backgroundColor: "#f3f6f1", borderRadius: 10, padding: 10, minWidth: 78, textAlign: "center" },
+  clubRow: { flexDirection: "row", alignItems: "center", gap: 10, marginVertical: 5 },
+  clubName: { flex: 1, fontWeight: "700" },
+  muted: { color: "#5f7566", lineHeight: 20, marginTop: 6 },
+  bigText: { fontSize: 20, fontWeight: "800", color: "#15351f" },
+  pill: { alignSelf: "flex-start", backgroundColor: "#dbead8", paddingVertical: 9, paddingHorizontal: 14, borderRadius: 999 },
+  pillText: { fontWeight: "800", color: "#15351f" },
+  dropdownButton: {
+  alignSelf: "stretch",
+  backgroundColor: "#dbead8",
+  paddingVertical: 12,
+  paddingHorizontal: 14,
+  borderRadius: 14,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+},
+
+dropdownButtonText: {
+  fontWeight: "800",
+  color: "#15351f",
+  fontSize: 15,
+},
+
+dropdownChevron: {
+  fontWeight: "900",
+  color: "#15351f",
+  fontSize: 13,
+},
+
+modalOverlay: {
+  flex: 1,
+  backgroundColor: "rgba(0, 0, 0, 0.35)",
+  justifyContent: "center",
+  padding: 20,
+},
+
+modalCard: {
+  backgroundColor: "white",
+  borderRadius: 18,
+  padding: 16,
+},
+
+modalTitle: {
+  fontSize: 18,
+  fontWeight: "900",
+  color: "#15351f",
+  marginBottom: 10,
+},
+
+optionRow: {
+  paddingVertical: 14,
+  paddingHorizontal: 12,
+  borderRadius: 12,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+},
+
+optionRowActive: {
+  backgroundColor: "#dbead8",
+},
+
+optionText: {
+  fontSize: 16,
+  fontWeight: "700",
+  color: "#15351f",
+},
+
+optionTextActive: {
+  fontWeight: "900",
+},
+
+optionCheck: {
+  fontSize: 18,
+  fontWeight: "900",
+  color: "#15351f",
+},
+  recommendation: { fontSize: 18, fontWeight: "800", color: "#15351f", lineHeight: 25, marginVertical: 10 },
+  factor: { color: "#385143", marginTop: 4 },
+  rowGap: { flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" },
+  button: { backgroundColor: "#2f6f3d", paddingVertical: 12, paddingHorizontal: 14, borderRadius: 13, alignItems: "center", marginTop: 10 },
+  dangerButton: { backgroundColor: "#963c3c" },
+  buttonText: { color: "white", fontWeight: "800" },
+  metric: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#d7dfd6" },
+  metricLabel: { color: "#385143", fontWeight: "700" },
+  metricValue: { color: "#15351f", fontWeight: "900" },
+});

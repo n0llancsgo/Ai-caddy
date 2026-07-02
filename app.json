@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "AI Caddie Starter",
+    "slug": "ai-caddie-starter",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "aicaddie",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "AI Caddie uses your location to identify course, hole, shot position and distances."
+      }
+    },
+    "android": {
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "AI Caddie uses your location to identify course, hole, shot position and distances."
+        }
+      ]
+    ]
+  }
+}
