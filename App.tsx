@@ -560,30 +560,30 @@ function submitHoleScore() {
             </View>
               <Text style={styles.muted}>Shots this hole: {shots.filter((shot) => shot.holeNumber === currentHoleNumber).length}</Text>
             </View>
+
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Score</Text>
+
+              <Text style={styles.label}>Score för hål {hole.number}</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={scoreInput}
+                onChangeText={setScoreInput}
+                placeholder={`Par ${hole.par}`}
+              />
+
+              <View style={styles.rowGap}>
+                <Button label="Spara score och gå vidare" onPress={submitHoleScore} />
+              </View>
+
+              <Text style={styles.muted}>
+                Sparat score:{" "}
+                {scores.find((score) => score.holeNumber === hole.number)?.strokes ?? "inte inskrivet"}
+              </Text>
+            </View>
           </View>
         )}
-
-        <View style={styles.card}>
-  <Text style={styles.sectionTitle}>Score</Text>
-
-  <Text style={styles.label}>Score för hål {hole.number}</Text>
-  <TextInput
-    style={styles.input}
-    keyboardType="numeric"
-    value={scoreInput}
-    onChangeText={setScoreInput}
-    placeholder={`Par ${hole.par}`}
-  />
-
-  <View style={styles.rowGap}>
-    <Button label="Spara score och gå vidare" onPress={submitHoleScore} />
-  </View>
-
-  <Text style={styles.muted}>
-    Sparat score:{" "}
-    {scores.find((score) => score.holeNumber === hole.number)?.strokes ?? "inte inskrivet"}
-  </Text>
-</View>
 
         {tab === "analysis" && (
           <View style={styles.card}>
