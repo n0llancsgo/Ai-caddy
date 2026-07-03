@@ -23,7 +23,6 @@ export const sampleCourses: Course[] = [
           longitude: 18.074663,
         },
         preferredMiss: "left",
-        greenSize: "medium",
         doglegDirection: "none",
         greenFrontMetersFromTee: 338,
         greenBackMetersFromTee: 364,
@@ -62,7 +61,6 @@ export const sampleCourses: Course[] = [
           longitude: 18.069492,
         },
         preferredMiss: "short",
-        greenSize: "small",
         greenFrontMetersFromTee: 136,
         greenBackMetersFromTee: 156,
         hazards: [
@@ -109,7 +107,6 @@ export const sampleCourses: Course[] = [
           longitude: 18.071531,
         },
         preferredMiss: "right",
-        greenSize: "medium",
         greenFrontMetersFromTee: 468,
         greenBackMetersFromTee: 492,
         hazards: [

@@ -75,7 +75,7 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 100000)}`;
 }
 
-export default function App() {
+export default function App() { 
   const [tab, setTab] = useState<Tab>("round");
   const [profile, setProfile] = useState<PlayerProfile>(defaultProfile);
   const [course, setCourse] = useState(sampleCourses[0]);
@@ -150,30 +150,92 @@ export default function App() {
     }));
   }
 
+  function getDistanceToHoleTarget(position: GeoPoint, holeData = hole): number | undefined {
+  if (!holeData.greenCenter) return undefined;
+  return Math.max(0, Math.round(distanceMeters(position, holeData.greenCenter)));
+}
+
   async function locateAndFetchWeather() {
-    try {
-      setStatus("Checking GPS and weather...");
-      const position = await getCurrentPosition();
-      if (!position) {
-        setStatus("Location permission was not granted. Demo course remains active.");
-        return;
-      }
-
-      const nearest = findNearestCourse(position, sampleCourses, 10000);
-      if (nearest) setCourse(nearest);
-
-      const fetchedWeather = await fetchOpenMeteoWeather(position.latitude, position.longitude);
-      setWeather(fetchedWeather);
-      setStatus(`GPS active. Weather updated${nearest ? ` near ${nearest.name}` : ""}.`);
-    } catch (error) {
-      console.warn(error);
-      setStatus("Could not fetch GPS/weather. The app still works in manual mode.");
+  try {
+    setStatus("Checking GPS and weather...");
+    const position = await getCurrentPosition();
+    if (!position) {
+      setStatus("Location permission was not granted. Demo course remains active.");
+      return;
     }
-  }
 
-  function addShot() {
+    const nearest = findNearestCourse(position, sampleCourses, 10000);
+    if (nearest) {
+      setCourse(nearest);
+      const firstHole = nearest.holes[0];
+      setCurrentHoleNumber(firstHole.number);
+      setCurrentBallPosition(firstHole.tee);
+
+      if (firstHole.tee && firstHole.greenCenter) {
+        setTargetDistance(String(Math.round(distanceMeters(firstHole.tee, firstHole.greenCenter))));
+      } else {
+        setTargetDistance(String(firstHole.meters));
+      }
+    }
+
+    const fetchedWeather = await fetchOpenMeteoWeather(position.latitude, position.longitude);
+    setWeather(fetchedWeather);
+    setStatus(`GPS active. Weather updated${nearest ? ` near ${nearest.name}` : ""}.`);
+  } catch (error) {
+    console.warn(error);
+    setStatus("Could not fetch GPS/weather. The app still works in manual mode.");
+  }
+}
+
+async function markCurrentBallPosition() {
+  try {
+    setStatus("Reading GPS position...");
+    const position = await getCurrentPosition();
+
+    if (!position) {
+      setStatus("Could not read GPS position.");
+      return;
+    }
+
+    setCurrentBallPosition(position);
+
+    const autoDistance = getDistanceToHoleTarget(position);
+    if (typeof autoDistance === "number") {
+      setTargetDistance(String(autoDistance));
+      setStatus(`Ball position marked. About ${autoDistance} m to green center.`);
+    } else {
+      setStatus("Ball position marked from GPS.");
+    }
+  } catch (error) {
+    console.warn(error);
+    setStatus("Could not mark current GPS position.");
+  }
+}
+
+  async function addShotFromGps() {
+  try {
     const shotNumber = shots.filter((shot) => shot.holeNumber === currentHoleNumber).length + 1;
     const selectedOption = lie === "tee" ? undefined : shotPlan?.recommendedOption;
+
+    const startPosition = currentBallPosition ?? hole.tee;
+
+    if (!startPosition) {
+      setStatus("No start position found. Mark your current tee/ball position first.");
+      return;
+    }
+
+    setStatus("Reading GPS for shot end position...");
+    const endPosition = await getCurrentPosition();
+
+    if (!endPosition) {
+      setStatus("Could not read GPS for shot end position.");
+      return;
+    }
+
+    const measuredDistanceMeters = Math.max(
+      0,
+      Math.round(distanceMeters(startPosition, endPosition))
+    );
 
     const shot: RoundShot = {
       id: generateId("shot"),
@@ -193,13 +255,49 @@ export default function App() {
         lie === "tee"
           ? teeRecommendation.targetDistanceMeters
           : selectedOption?.targetDistanceMeters ?? recommendation.targetDistanceMeters,
+      measuredDistanceMeters,
+      startPosition,
+      endPosition,
+      position: endPosition,
       createdAtIso: new Date().toISOString(),
-      note: lie === "tee" ? teeRecommendation.message : selectedOption?.message ?? recommendation.message,
+      note:
+        lie === "tee"
+          ? teeRecommendation.message
+          : selectedOption?.message ?? recommendation.message,
     };
 
     setShots((current) => [...current, shot]);
-    setStatus(`Logged shot ${shotNumber} on hole ${currentHoleNumber}: ${shot.clubName}, ${outcome}.`);
+    setCurrentBallPosition(endPosition);
+
+    const autoDistance =
+      getDistanceToHoleTarget(endPosition) ??
+      Math.max(0, Math.round(distanceToGreenMeters - measuredDistanceMeters));
+
+    setTargetDistance(String(autoDistance));
+
+    if (outcome === "green" || outcome === "putt") {
+      setLie("green");
+    } else if (outcome === "fairway") {
+      setLie("fairway");
+    } else if (outcome === "bunker") {
+      setLie("sand");
+    } else if (
+      outcome === "right" ||
+      outcome === "left" ||
+      outcome === "short" ||
+      outcome === "long"
+    ) {
+      setLie("rough");
+    }
+
+    setStatus(
+      `Logged shot ${shotNumber}: ${shot.clubName}, ${measuredDistanceMeters} m. About ${autoDistance} m remaining.`
+    );
+  } catch (error) {
+    console.warn(error);
+    setStatus("Could not save shot from GPS.");
   }
+}
 
   function speakCurrentPlan() {
     if (lie === "tee") {
@@ -217,16 +315,23 @@ export default function App() {
   }
 
   function nextHole(delta: number) {
-    const holeNumbers = course.holes.map((h) => h.number);
-    const index = holeNumbers.indexOf(currentHoleNumber);
-    const nextIndex = Math.min(Math.max(index + delta, 0), holeNumbers.length - 1);
-    const nextNumber = holeNumbers[nextIndex];
-    setCurrentHoleNumber(nextNumber);
-    const nextHoleData = course.holes.find((h) => h.number === nextNumber);
+  const holeNumbers = course.holes.map((h) => h.number);
+  const index = holeNumbers.indexOf(currentHoleNumber);
+  const nextIndex = Math.min(Math.max(index + delta, 0), holeNumbers.length - 1);
+  const nextNumber = holeNumbers[nextIndex];
+  const nextHoleData = course.holes.find((h) => h.number === nextNumber);
+
+  setCurrentHoleNumber(nextNumber);
+  setLie("tee");
+  setOutcome("fairway");
+  setCurrentBallPosition(nextHoleData?.tee);
+
+  if (nextHoleData?.tee && nextHoleData.greenCenter) {
+    setTargetDistance(String(Math.round(distanceMeters(nextHoleData.tee, nextHoleData.greenCenter))));
+  } else {
     setTargetDistance(String(nextHoleData?.meters ?? ""));
-    setLie("tee");
-    setOutcome("fairway");
   }
+}
 
   function resetRound() {
     Alert.alert("Reset round", "Clear all logged shots on this phone?", [
@@ -388,7 +493,16 @@ export default function App() {
                 options={OUTCOME_OPTIONS}
                 onChange={setOutcome}
               />
-              <Button label="Save shot" onPress={addShot} />
+              <Text style={styles.muted}>
+              Current ball position:{" "}
+              {currentBallPosition
+               ? `${currentBallPosition.latitude.toFixed(5)}, ${currentBallPosition.longitude.toFixed(5)}`
+               : "not set"}
+              </Text>
+              <View style={styles.rowGap}>
+              <Button label="Mark current position" onPress={markCurrentBallPosition} />
+              <Button label="Save shot from GPS" onPress={addShotFromGps} />
+            </View>
               <Text style={styles.muted}>Shots this hole: {shots.filter((shot) => shot.holeNumber === currentHoleNumber).length}</Text>
             </View>
           </View>
@@ -623,4 +737,4 @@ optionCheck: {
   metric: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#d7dfd6" },
   metricLabel: { color: "#385143", fontWeight: "700" },
   metricValue: { color: "#15351f", fontWeight: "900" },
-});
+}); 
