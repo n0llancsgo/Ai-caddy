@@ -19,7 +19,7 @@ import { recommendClub } from "./src/domain/clubRecommendation";
 import { teeSummary } from "./src/domain/holeStrategy";
 import { planShot } from "./src/domain/shotPlanner";
 import { analyzeRound } from "./src/domain/roundAnalysis";
-import { Club, GeoPoint, Lie, PlayerProfile, RoundShot, ShotOutcome, WeatherSnapshot } from "./src/domain/types";
+import { Club, GeoPoint, HoleScore, Lie, PlayerProfile, RoundShot, ShotOutcome, WeatherSnapshot } from "./src/domain/types";
 import { getCurrentPosition, findNearestCourse } from "./src/services/location";
 import { fetchOpenMeteoWeather } from "./src/services/weatherOpenMeteo";
 import { loadJson, saveJson } from "./src/services/storage";
@@ -27,6 +27,7 @@ import { speak } from "./src/services/speech";
 
 const PROFILE_KEY = "ai-caddie.profile.v1";
 const SHOTS_KEY = "ai-caddie.shots.v1";
+const SCORES_KEY = "ai-caddie.scores.v1";
 const LIES: Lie[] = ["tee", "fairway", "rough", "sand", "green", "recovery"];
 const OUTCOMES: ShotOutcome[] = ["fairway", "green", "right", "left", "short", "long", "bunker", "penalty", "putt", "other"];
 type SelectOption<T extends string> = {
@@ -85,6 +86,8 @@ export default function App() {
   const [outcome, setOutcome] = useState<ShotOutcome>("fairway");
   const [weather, setWeather] = useState<WeatherSnapshot | undefined>();
   const [shots, setShots] = useState<RoundShot[]>([]);
+  const [scores, setScores] = useState<HoleScore[]>([]);
+  const [scoreInput, setScoreInput] = useState("");
   const [currentBallPosition, setCurrentBallPosition] = useState<GeoPoint | undefined>(
     sampleCourses[0].holes[0].tee,
   );
@@ -93,6 +96,7 @@ export default function App() {
   useEffect(() => {
     void loadJson<PlayerProfile>(PROFILE_KEY, defaultProfile).then(setProfile);
     void loadJson<RoundShot[]>(SHOTS_KEY, []).then(setShots);
+    void loadJson<HoleScore[]>(SCORES_KEY, []).then(setScores);
   }, []);
 
   useEffect(() => {
@@ -102,6 +106,10 @@ export default function App() {
   useEffect(() => {
     void saveJson(SHOTS_KEY, shots);
   }, [shots]);
+
+  useEffect(() => {
+  void saveJson(SCORES_KEY, scores);
+  }, [scores]);
 
   const hole = course.holes.find((h) => h.number === currentHoleNumber) ?? course.holes[0];
 
@@ -333,6 +341,53 @@ async function markCurrentBallPosition() {
   }
 }
 
+function submitHoleScore() {
+  const strokes = Number(scoreInput);
+
+  if (!Number.isFinite(strokes) || strokes <= 0) {
+    setStatus("Ange ett giltigt score för hålet.");
+    return;
+  }
+
+  const score: HoleScore = {
+    holeNumber: currentHoleNumber,
+    par: hole.par,
+    strokes,
+    createdAtIso: new Date().toISOString(),
+  };
+
+  setScores((current) => [
+    ...current.filter((item) => item.holeNumber !== currentHoleNumber),
+    score,
+  ]);
+
+  const holeNumbers = course.holes.map((h) => h.number);
+  const index = holeNumbers.indexOf(currentHoleNumber);
+  const nextHoleNumber = holeNumbers[index + 1];
+
+  setScoreInput("");
+
+  if (!nextHoleNumber) {
+    setStatus("Score sparat. Rundan är klar.");
+    return;
+  }
+
+  const nextHoleData = course.holes.find((h) => h.number === nextHoleNumber);
+
+  setCurrentHoleNumber(nextHoleNumber);
+  setLie("tee");
+  setOutcome("fairway");
+  setCurrentBallPosition(nextHoleData?.tee);
+
+  if (nextHoleData?.tee && nextHoleData.greenCenter) {
+    setTargetDistance(String(Math.round(distanceMeters(nextHoleData.tee, nextHoleData.greenCenter))));
+  } else {
+    setTargetDistance(String(nextHoleData?.meters ?? ""));
+  }
+
+  setStatus(`Score sparat. Nu spelar du hål ${nextHoleNumber}.`);
+}
+
   function resetRound() {
     Alert.alert("Reset round", "Clear all logged shots on this phone?", [
       { text: "Cancel", style: "cancel" },
@@ -507,6 +562,28 @@ async function markCurrentBallPosition() {
             </View>
           </View>
         )}
+
+        <View style={styles.card}>
+  <Text style={styles.sectionTitle}>Score</Text>
+
+  <Text style={styles.label}>Score för hål {hole.number}</Text>
+  <TextInput
+    style={styles.input}
+    keyboardType="numeric"
+    value={scoreInput}
+    onChangeText={setScoreInput}
+    placeholder={`Par ${hole.par}`}
+  />
+
+  <View style={styles.rowGap}>
+    <Button label="Spara score och gå vidare" onPress={submitHoleScore} />
+  </View>
+
+  <Text style={styles.muted}>
+    Sparat score:{" "}
+    {scores.find((score) => score.holeNumber === hole.number)?.strokes ?? "inte inskrivet"}
+  </Text>
+</View>
 
         {tab === "analysis" && (
           <View style={styles.card}>

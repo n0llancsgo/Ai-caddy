@@ -14,6 +14,15 @@ export type ShotOutcome =
 
 export type ShotShape = "straight" | "fade" | "draw" | "stinger" | "layup";
 
+export type HoleScore = {
+  holeNumber: number;
+  par: number;
+  strokes: number;
+  putts?: number;
+  penalties?: number;
+  createdAtIso: string;
+};
+
 export type Club = {
   id: string;
   name: string;
