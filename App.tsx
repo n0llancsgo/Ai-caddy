@@ -175,14 +175,18 @@ export default function App() {
     const nearest = findNearestCourse(position, sampleCourses, 10000);
     if (nearest) {
       setCourse(nearest);
-      const firstHole = nearest.holes[0];
-      setCurrentHoleNumber(firstHole.number);
-      setCurrentBallPosition(firstHole.tee);
 
-      if (firstHole.tee && firstHole.greenCenter) {
-        setTargetDistance(String(Math.round(distanceMeters(firstHole.tee, firstHole.greenCenter))));
+      const activeHole =
+        nearest.holes.find((h) => h.number === currentHoleNumber) ?? nearest.holes[0];
+
+      setCurrentBallPosition(position);
+
+      const distanceToActiveGreen = getDistanceToHoleTarget(position, activeHole);
+
+      if (typeof distanceToActiveGreen === "number") {
+        setTargetDistance(String(distanceToActiveGreen));
       } else {
-        setTargetDistance(String(firstHole.meters));
+        setTargetDistance(String(activeHole.meters));
       }
     }
 
